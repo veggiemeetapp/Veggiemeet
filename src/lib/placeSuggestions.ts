@@ -1,0 +1,235 @@
+import { supabase } from "@/integrations/supabase/client";
+
+/** Supabase types are regenerated post-migration; cast rpc to keep TS green. */
+type RpcFn = <T>(
+  name: string,
+  args?: Record<string, unknown>,
+) => Promise<{ data: T | null; error: { message: string } | null }>;
+const rpc: RpcFn = <T,>(name: string, args?: Record<string, unknown>) =>
+  (supabase.rpc as unknown as RpcFn)<T>(name, args);
+
+export type SuggestionStatus =
+  | "pending"
+  | "under_review"
+  | "approved"
+  | "rejected"
+  | "duplicate";
+
+/** Safe reason codes returned by submit_community_place_suggestion(). */
+export type SubmitReason =
+  | "success"
+  | "invalid_input"
+  | "invalid_url"
+  | "duplicate_suggestion"
+  | "duplicate_published_place"
+  | "duplicate_active_suggestion"
+  | "submission_limit_reached"
+  | "unsupported_city"
+  | "unauthenticated";
+
+export interface SubmitResult {
+  ok: boolean;
+  reason: SubmitReason;
+  suggestion_id?: string;
+  /** WO-110: set when the server stored a possible-match reference. */
+  possible_duplicate?: boolean;
+  match_name?: string | null;
+  published_place_id?: string | null;
+}
+
+/** WO-110 duplicate confidence returned by the server-side classifier.
+ *  hard     → same physical location; submission is refused.
+ *  possible → similar identity only; submission is allowed and owner reviews.
+ */
+export type DuplicateLevel = "none" | "possible" | "hard";
+
+/** Safe, public-only duplicate reasons. Never exposes internal scores. */
+export type DuplicateReasonCode =
+  | "same_address_same_city"
+  | "same_address_pending_suggestion"
+  | "similar_name"
+  | "same_official_website";
+
+export interface DuplicateCheck {
+  level: DuplicateLevel;
+  entity_type?: "place" | "candidate" | "suggestion";
+  match_id?: string;
+  match_name?: string;
+  match_address?: string | null;
+  match_status?: string | null;
+  published_place_id?: string | null;
+  reasons?: DuplicateReasonCode[];
+}
+
+/** Owner-facing review context for a flagged suggestion. */
+export interface DuplicateMatch {
+  entity_type: "place" | "candidate" | "suggestion";
+  id: string;
+  name: string;
+  address: string | null;
+  status: string | null;
+  published_place_id?: string | null;
+  reasons: string[];
+}
+
+export const DUPLICATE_REASON_LABEL: Record<DuplicateReasonCode, string> = {
+  same_address_same_city: "Same address in this city",
+  same_address_pending_suggestion: "Same address already awaiting review",
+  similar_name: "Similar name",
+  same_official_website: "Same official website",
+};
+
+export interface MySuggestion {
+  id: string;
+  place_name: string;
+  city_name: string | null;
+  submitted_at: string;
+  status: SuggestionStatus;
+}
+
+export interface OwnerSuggestion {
+  id: string;
+  place_name: string;
+  address_text: string;
+  official_source_url: string;
+  vegan_reason: string;
+  submitter_note: string | null;
+  city_name: string | null;
+  city_id: string | null;
+  submitted_at: string;
+  /** WO-109: reviewed_at — when the suggestion was handled (history sorting). */
+  resolved_at: string | null;
+  moderation_status: SuggestionStatus;
+  rejection_reason: string | null;
+  promoted_candidate_id: string | null;
+  /** Verification status of the promoted candidate, when one exists. */
+  candidate_status: string | null;
+  /** Set once the promoted candidate has been published. */
+  published_place_id: string | null;
+  submitter_profile_id: string;
+  possible_duplicate: boolean;
+  /** WO-110: what the suggestion may duplicate, with owner-safe reasons. */
+  duplicate_match: DuplicateMatch | null;
+}
+
+/** WO-109 lifecycle scopes for the owner queue. */
+export type SuggestionScope = "active" | "history";
+
+/** Suggestions still needing owner action. Mirrors the server-side filter. */
+export const ACTIVE_STATUSES: SuggestionStatus[] = ["pending", "under_review"];
+
+/** True when a suggestion still requires owner action. */
+export function isActiveSuggestion(status: SuggestionStatus): boolean {
+  return ACTIVE_STATUSES.includes(status);
+}
+
+/** User-facing status wording. Never exposes internal moderation detail. */
+export const USER_STATUS_LABEL: Record<SuggestionStatus, string> = {
+  pending: "Pending review",
+  under_review: "Under review",
+  approved: "Approved for verification",
+  rejected: "Not approved",
+  duplicate: "Already suggested",
+};
+
+/** Short, non-internal explanation shown under a suggestion's status. */
+export const USER_STATUS_HINT: Record<SuggestionStatus, string> = {
+  pending: "We'll review your suggestion soon.",
+  under_review: "The VeggieMeet team is reviewing this place.",
+  approved: "We're checking the place before it can appear publicly.",
+  rejected: "This place doesn't currently meet the requirements for Community Places.",
+  duplicate: "This place is already in our review process.",
+};
+
+
+export const REJECTION_REASONS = [
+  { value: "not_fully_vegan", label: "Not fully vegan" },
+  { value: "insufficient_evidence", label: "Insufficient evidence" },
+  { value: "closed_or_unavailable", label: "Closed or unavailable" },
+  { value: "incorrect_information", label: "Incorrect information" },
+  { value: "outside_supported_city", label: "Outside supported city" },
+  { value: "other", label: "Other" },
+] as const;
+
+export async function submitPlaceSuggestion(input: {
+  cityId: string;
+  placeName: string;
+  addressText: string;
+  officialSourceUrl: string;
+  veganReason: string;
+  submitterNote?: string;
+}): Promise<SubmitResult> {
+  const { data, error } = await rpc<SubmitResult>("submit_community_place_suggestion", {
+    _city_id: input.cityId,
+    _place_name: input.placeName,
+    _address_text: input.addressText,
+    _official_source_url: input.officialSourceUrl,
+    _vegan_reason: input.veganReason,
+    _submitter_note: input.submitterNote?.trim() ? input.submitterNote : null,
+  });
+  if (error) throw new Error(error.message);
+  return (data as SubmitResult) ?? { ok: false, reason: "invalid_input" };
+}
+
+/** WO-110: server-side duplicate classification used as supplemental member UX.
+ *  Enforcement still lives in submit_community_place_suggestion(). */
+export async function checkSuggestionDuplicate(input: {
+  cityId: string;
+  placeName: string;
+  addressText: string;
+  officialSourceUrl: string;
+}): Promise<DuplicateCheck> {
+  const { data, error } = await rpc<DuplicateCheck>(
+    "check_community_place_suggestion_duplicate",
+    {
+      _city_id: input.cityId,
+      _place_name: input.placeName,
+      _address_text: input.addressText,
+      _official_source_url: input.officialSourceUrl,
+    },
+  );
+  if (error) throw new Error(error.message);
+  return (data as DuplicateCheck) ?? { level: "none" };
+}
+
+export async function fetchMyPlaceSuggestions(): Promise<MySuggestion[]> {
+  const { data, error } = await rpc<MySuggestion[]>("get_my_place_suggestions");
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+/** WO-109: the queue is filtered server-side by lifecycle state. */
+export async function fetchSuggestionQueue(
+  scope: SuggestionScope = "active",
+): Promise<OwnerSuggestion[]> {
+  const { data, error } = await rpc<OwnerSuggestion[]>("get_place_suggestion_queue", {
+    _scope: scope,
+  });
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+export async function moderateSuggestion(
+  id: string,
+  action: "start_review" | "reject" | "duplicate",
+  reason?: string,
+  notes?: string,
+): Promise<{ ok: boolean; reason: string }> {
+  const { data, error } = await rpc<{ ok: boolean; reason: string }>(
+    "moderate_place_suggestion",
+    { _suggestion_id: id, _action: action, _reason: reason ?? null, _notes: notes ?? null },
+  );
+  if (error) throw new Error(error.message);
+  return data ?? { ok: false, reason: "unknown" };
+}
+
+export async function promoteSuggestion(
+  id: string,
+): Promise<{ ok: boolean; reason: string; candidate_id?: string }> {
+  const { data, error } = await rpc<{ ok: boolean; reason: string; candidate_id?: string }>(
+    "promote_place_suggestion_to_candidate",
+    { _suggestion_id: id },
+  );
+  if (error) throw new Error(error.message);
+  return data ?? { ok: false, reason: "unknown" };
+}

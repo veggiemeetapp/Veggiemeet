@@ -1,0 +1,84 @@
+import { Calendar, Clock, MapPin, Navigation } from "lucide-react";
+import type { Meetup, CommunityPlace } from "@/types";
+import { formatMeetupDate, formatMeetupTimeRange, formatDuration } from "@/lib/format";
+import { useMeetupCategoryLabel } from "@/lib/meetupCategory";
+
+interface Props {
+  meetup: Meetup;
+  place?: CommunityPlace;
+  distanceKm?: number;
+}
+
+export function MeetupInfo({ meetup, place, distanceKm }: Props) {
+  // WO-126A — canonical Primary category label; the legacy enum is only a
+  // fallback for historical Meetups without a canonical tag.
+  const categoryLabel = useMeetupCategoryLabel(meetup.primaryInterestId, meetup.category);
+  return (
+    <div>
+      {categoryLabel && (
+        <span className="inline-block text-[11px] font-semibold text-primary uppercase tracking-wider bg-soft-green px-2.5 py-1 rounded-full">
+          {categoryLabel}
+        </span>
+      )}
+      {/* break-words keeps very long unbroken titles from widening the phone
+          shell and pushing the sticky action bar off-screen on small viewports */}
+      <h1 className="mt-3 text-[26px] leading-tight font-semibold text-charcoal break-words">
+        {meetup.title}
+      </h1>
+
+
+      <div className="mt-5 space-y-3 text-[15px] text-charcoal">
+        <Row icon={<Calendar className="w-4 h-4" />} label={formatMeetupDate(meetup.date)} />
+        {(() => {
+          // WO-112: end time is optional — the duration suffix only exists when
+          // the host set an end.
+          const range = formatMeetupTimeRange(meetup.startTime, meetup.endTime);
+          const duration = formatDuration(meetup.startTime, meetup.endTime);
+          return (
+            <Row
+              icon={<Clock className="w-4 h-4" />}
+              label={duration ? `${range} · ${duration}` : range}
+            />
+          );
+        })()}
+
+        {(() => {
+          const name = meetup.location?.locationName ?? meetup.customLocation?.name ?? place?.name;
+          const addr = meetup.location?.address ?? meetup.customLocation?.address ?? place?.address;
+          const cityName = meetup.location?.cityName ?? null;
+          const neighborhood = meetup.location?.neighborhood ?? null;
+          if (!name && !cityName) return null;
+          const sub = [addr, neighborhood, cityName].filter(Boolean).join(" · ") || undefined;
+          return (
+            <Row
+              icon={<MapPin className="w-4 h-4" />}
+              label={name ?? cityName ?? "Location"}
+              sub={sub}
+            />
+          );
+        })()}
+
+        {distanceKm != null && (
+          <Row
+            icon={<Navigation className="w-4 h-4" />}
+            label={`${distanceKm.toFixed(1)} km away`}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Row({ icon, label, sub }: { icon: React.ReactNode; label: string; sub?: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="w-9 h-9 rounded-full bg-soft-green flex items-center justify-center text-primary shrink-0">
+        {icon}
+      </div>
+      <div className="min-w-0 pt-1">
+        <div className="text-charcoal font-medium leading-tight">{label}</div>
+        {sub && <div className="text-charcoal-muted text-sm mt-0.5">{sub}</div>}
+      </div>
+    </div>
+  );
+}
